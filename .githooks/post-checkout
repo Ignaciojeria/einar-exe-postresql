@@ -1,0 +1,35 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "${EINAR_HOOK_BYPASS:-}" = "1" ]; then
+  exit 0
+fi
+
+if [ ! -f ".einar/config.json" ]; then
+  exit 0
+fi
+
+locked_branch=$(grep -o '"workspaceBranch"[[:space:]]*:[[:space:]]*"[^"]*"' .einar/config.json | sed 's/.*"workspaceBranch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)
+if [ -z "${locked_branch:-}" ]; then
+  exit 0
+fi
+
+current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+if [ -z "${current_branch:-}" ] || [ "$current_branch" = "HEAD" ]; then
+  exit 0
+fi
+
+if [ "$current_branch" != "$locked_branch" ]; then
+  echo "❌ Checkout bloqueado por Einar workspace lock"
+  echo "   workspaceBranch: $locked_branch"
+  echo "   branch actual:    $current_branch"
+  echo "   Revirtiendo checkout para evitar context switch..."
+  EINAR_HOOK_BYPASS=1 git checkout -q "$locked_branch" || {
+    echo "⚠️  No se pudo revertir automáticamente. Vuelve manualmente: git checkout $locked_branch"
+    exit 1
+  }
+  echo "✅ Workspace restaurado en '$locked_branch'"
+  exit 1
+fi
+
+exit 0

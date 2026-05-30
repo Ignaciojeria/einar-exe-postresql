@@ -1,0 +1,13 @@
+root = "."
+
+tmp_dir = "tmp"
+
+[build]
+  cmd = "sh -c 'if [ -f ./cmd/api/main.go ]; then go build -o ./tmp/main ./cmd/api; elif [ -f ./cmd/main.go ]; then go build -o ./tmp/main ./cmd; else go build -o ./tmp/main .; fi'"
+  bin = "./tmp/main"
+  include_ext = ["go", "tpl", "tmpl", "html"]
+  exclude_dir = ["assets", "tmp", "vendor", "node_modules", ".git", ".einar"]
+  delay = 500
+
+[log]
+  time = true

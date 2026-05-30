@@ -1,0 +1,38 @@
+version: 1
+
+project:
+  slug: postgresql
+
+defaults:
+  baseBranch: main
+  portStart: 3000
+  portStrategy: sequential # sequential | hash
+  runtime: air
+  sync: mutagen
+  previewDomain: project.dev
+
+templates:
+  prod:
+    branch: main
+    port: 3000
+    persistent: true
+    runtime: air
+
+  develop:
+    branch: develop
+    port: 3001
+    persistent: true
+    runtime: air
+
+rules:
+  - pattern: "feature/*"
+    persistent: false
+    runtime: air
+
+  - pattern: "issue/*"
+    persistent: false
+    runtime: air
+
+  - pattern: "agent/*"
+    persistent: false
+    runtime: air

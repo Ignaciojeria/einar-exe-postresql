@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"os"
+	"strings"
 	"time"
 
 	"postgresql/internal/shared/server/middleware"
@@ -21,7 +23,11 @@ type Server struct {
 func New(jwks keyfunc.Keyfunc) *Server {
 	server := fuego.NewServer(fuego.WithAddr(":8000"))
 	// Global middleware (aplica a todas las rutas registradas en este server)
-	fuego.Use(server, middleware.JWTMiddleware(jwks, "https://einar.exe.xyz:8000", ""))
+	fuego.Use(server, middleware.JWTMiddleware(
+		jwks,
+		envOrDefault("JWT_ISSUER", "https://einar.exe.xyz:8000"),
+		strings.TrimSpace(os.Getenv("JWT_AUDIENCE")),
+	))
 	return &Server{Server: server}
 }
 
@@ -46,4 +52,12 @@ func startServer(
 	})
 
 	return nil
+}
+
+func envOrDefault(key, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	return value
 }

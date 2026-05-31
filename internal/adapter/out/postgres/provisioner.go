@@ -39,6 +39,15 @@ type ProvisionResult struct {
 	DatabaseURL string
 }
 
+type Project struct {
+	ID          string
+	OwnerSub    string
+	Name        string
+	DBName      string
+	DBUser      string
+	DatabaseURL string
+}
+
 type ProjectConflictError struct {
 	Detail string
 }
@@ -73,6 +82,34 @@ func NewProvisioner() (*Provisioner, error) {
 	}
 
 	return p, nil
+}
+
+func (p *Provisioner) FindProjectForOwner(ctx context.Context, ownerSub, idOrName string) (Project, bool, error) {
+	out, err := p.psql(ctx, p.adminDatabase, fmt.Sprintf(`
+SELECT id || E'\t' || owner_sub || E'\t' || name || E'\t' || db_name || E'\t' || db_user || E'\t' || database_url
+FROM public.projects
+WHERE owner_sub = %s AND (id::text = %s OR name = %s)
+LIMIT 1;
+`, sqlLiteral(ownerSub), sqlLiteral(idOrName), sqlLiteral(idOrName)))
+	if err != nil {
+		return Project{}, false, provisionError{msg: "cannot find project", err: err}
+	}
+	line := strings.TrimSpace(out)
+	if line == "" {
+		return Project{}, false, nil
+	}
+	parts := strings.Split(line, "	")
+	if len(parts) != 6 {
+		return Project{}, false, provisionError{msg: "invalid project metadata result"}
+	}
+	return Project{
+		ID:          parts[0],
+		OwnerSub:    parts[1],
+		Name:        parts[2],
+		DBName:      parts[3],
+		DBUser:      parts[4],
+		DatabaseURL: parts[5],
+	}, true, nil
 }
 
 func (p *Provisioner) Provision(ctx context.Context, req ProvisionRequest) (ProvisionResult, error) {

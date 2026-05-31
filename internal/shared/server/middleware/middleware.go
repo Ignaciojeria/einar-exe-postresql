@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/MicahParks/keyfunc/v3"
@@ -24,6 +25,15 @@ func JWTMiddleware(
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if os.Getenv("AUTH_DISABLED") == "true" {
+				sub := strings.TrimSpace(r.Header.Get("X-Dev-Sub"))
+				if sub == "" {
+					sub = "dev-user"
+				}
+				ctx := context.WithValue(r.Context(), claimsContextKey, jwt.MapClaims{"sub": sub})
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 
 			authHeader := r.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") {

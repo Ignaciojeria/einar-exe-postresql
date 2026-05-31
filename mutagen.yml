@@ -1,0 +1,12 @@
+sync:
+  defaults:
+    mode: "two-way-resolved"
+    ignore:
+      vcs: true
+      paths:
+        - "node_modules"
+        - ".git"
+
+  postgresql:
+    alpha: "."
+    beta: "exedev@postgresql.exe.xyz:/home/exedev/workspace/postgresql"

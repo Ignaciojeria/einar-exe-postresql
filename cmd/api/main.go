@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	_ "postgresql/internal/adapter/in/web"
+	_ "postgresql/internal/adapter/out/postgres"
 	_ "postgresql/internal/shared/jwks"
 	_ "postgresql/internal/shared/server"
 

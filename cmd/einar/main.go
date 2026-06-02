@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/url"
@@ -18,7 +20,7 @@ import (
 	"syscall"
 )
 
-const defaultDBAPI = "https://postgresql.exe.xyz"
+const defaultDBAPI = "https://postgresql.exe.xyz:8000"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -27,11 +29,22 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) < 2 || args[0] != "db" || args[1] != "connect" {
-		return fmt.Errorf("usage: einar db connect [--project <name|id>] [--port <n>] [--api <url>] [--token <jwt>]")
+	if len(args) < 2 || args[0] != "db" {
+		return usageError()
 	}
 
-	return runDBConnect(args[2:])
+	switch args[1] {
+	case "connect":
+		return runDBConnect(args[2:])
+	case "persist-project-response":
+		return runPersistProjectResponse(args[2:])
+	default:
+		return usageError()
+	}
+}
+
+func usageError() error {
+	return fmt.Errorf("usage:\n  einar db connect [--project <name|id>] [--port <n>] [--api <url>] [--token <jwt>]\n  einar db persist-project-response [--file <response.json>]")
 }
 
 func runDBConnect(args []string) error {
@@ -94,6 +107,9 @@ func runDBConnect(args []string) error {
 	if localDatabaseURL != "" {
 		log.Printf("database url (local): %s", localDatabaseURL)
 	}
+	if cfg.DatabaseSchema != "" {
+		log.Printf("schema: %s (informational only; databaseUrl remains the source of truth)", cfg.DatabaseSchema)
+	}
 	log.Printf("ready: keep this process running while you use psql/DBeaver")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -114,10 +130,18 @@ type authConfigFile struct {
 	ProjectAPIToken string `json:"ProjectAPIToken"`
 }
 
+type createProjectResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Schema      string `json:"schema"`
+	DatabaseURL string `json:"databaseUrl"`
+}
+
 type projectConfig struct {
-	ProjectID   string
-	ProjectName string
-	DatabaseURL string
+	ProjectID      string
+	ProjectName    string
+	DatabaseURL    string
+	DatabaseSchema string
 }
 
 type configFile struct {
@@ -126,7 +150,8 @@ type configFile struct {
 		Name string `json:"name"`
 	} `json:"project"`
 	Database struct {
-		URL string `json:"url"`
+		URL    string `json:"url"`
+		Schema string `json:"schema"`
 	} `json:"database"`
 
 	LastProjectID   string `json:"lastProjectId"`
@@ -137,6 +162,57 @@ type configFile struct {
 	ProjectDbPassword string `json:"projectDbPassword"`
 	ProjectDbHost     string `json:"projectDbHost"`
 	ProjectDbPort     int    `json:"projectDbPort"`
+}
+
+func runPersistProjectResponse(args []string) error {
+	fs := flag.NewFlagSet("db persist-project-response", flag.ContinueOnError)
+	file := fs.String("file", "", "path to JSON response from POST /projects (defaults to stdin)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var raw []byte
+	var err error
+	if strings.TrimSpace(*file) != "" {
+		raw, err = os.ReadFile(*file)
+		if err != nil {
+			return fmt.Errorf("cannot read %s: %w", *file, err)
+		}
+	} else {
+		raw, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("cannot read stdin: %w", err)
+		}
+	}
+
+	var resp createProjectResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("invalid project response JSON: %w", err)
+	}
+
+	if strings.TrimSpace(resp.ID) == "" || strings.TrimSpace(resp.Name) == "" || strings.TrimSpace(resp.DatabaseURL) == "" {
+		return errors.New("project response must include id, name and databaseUrl")
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("cannot determine working directory: %w", err)
+	}
+
+	cfgPath := filepath.Join(cwd, ".einar", "config.json")
+	if err := persistProjectConfig(cfgPath, resp); err != nil {
+		return err
+	}
+
+	log.Printf("persisted project config: %s", cfgPath)
+	log.Printf("project: %s (%s)", strings.TrimSpace(resp.Name), strings.TrimSpace(resp.ID))
+	if strings.TrimSpace(resp.Schema) != "" {
+		log.Printf("schema: %s", strings.TrimSpace(resp.Schema))
+	}
+	log.Printf("database url: %s", strings.TrimSpace(resp.DatabaseURL))
+	log.Printf("next: einar db connect")
+	return nil
 }
 
 func loadConfig(path string) (projectConfig, error) {
@@ -163,10 +239,70 @@ func loadConfig(path string) (projectConfig, error) {
 	}
 
 	return projectConfig{
-		ProjectID:   firstNonEmpty(strings.TrimSpace(parsed.Project.ID), strings.TrimSpace(parsed.LastProjectID)),
-		ProjectName: firstNonEmpty(strings.TrimSpace(parsed.Project.Name), strings.TrimSpace(parsed.LastProjectSlug)),
-		DatabaseURL: databaseURL,
+		ProjectID:      firstNonEmpty(strings.TrimSpace(parsed.Project.ID), strings.TrimSpace(parsed.LastProjectID)),
+		ProjectName:    firstNonEmpty(strings.TrimSpace(parsed.Project.Name), strings.TrimSpace(parsed.LastProjectSlug)),
+		DatabaseURL:    databaseURL,
+		DatabaseSchema: strings.TrimSpace(parsed.Database.Schema),
 	}, nil
+}
+
+func persistProjectConfig(path string, resp createProjectResponse) error {
+	cfg, err := readConfigDocument(path)
+	if err != nil {
+		return err
+	}
+
+	cfg["project"] = map[string]any{
+		"id":   strings.TrimSpace(resp.ID),
+		"name": strings.TrimSpace(resp.Name),
+	}
+
+	database := map[string]any{
+		"url": strings.TrimSpace(resp.DatabaseURL),
+	}
+	if schema := strings.TrimSpace(resp.Schema); schema != "" {
+		database["schema"] = schema
+	}
+	cfg["database"] = database
+	cfg["configVersion"] = 1
+
+	encoded, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("cannot encode %s: %w", path, err)
+	}
+	encoded = append(encoded, '\n')
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("cannot create %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		return fmt.Errorf("cannot write %s: %w", path, err)
+	}
+	return nil
+}
+
+func readConfigDocument(path string) (map[string]any, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]any{}, nil
+		}
+		return nil, fmt.Errorf("cannot read %s: %w", path, err)
+	}
+
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return map[string]any{}, nil
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(trimmed, &cfg); err != nil {
+		return nil, fmt.Errorf("invalid JSON in %s: %w", path, err)
+	}
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	return cfg, nil
 }
 
 func buildLegacyDatabaseURL(cfg configFile) (string, error) {

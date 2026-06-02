@@ -30,6 +30,7 @@ type createProjectRequest struct {
 type createProjectResponse struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
+	Schema      string `json:"schema"`
 	DatabaseURL string `json:"databaseUrl"`
 }
 
@@ -95,6 +96,7 @@ func createProject(c fuego.ContextWithBody[createProjectRequest], provisioner *p
 	return createProjectResponse{
 		ID:          projectID,
 		Name:        name,
+		Schema:      dbName,
 		DatabaseURL: result.DatabaseURL,
 	}, nil
 }

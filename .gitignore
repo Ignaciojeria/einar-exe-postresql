@@ -2,6 +2,7 @@
 # Einar local runtime files
 .einar/
 tmp/
+.env*
 .air.log
 .air.pid
 mutagen.yml.lock

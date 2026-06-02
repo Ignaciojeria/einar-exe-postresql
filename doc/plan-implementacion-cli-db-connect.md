@@ -7,9 +7,12 @@ Actualmente el provisioning de proyecto/base de datos devuelve una respuesta com
 {
   "id": "c82b531b-b8d5-4daf-83a7-063f153e4e58",
   "name": "mi-proyecto-02",
-  "databaseUrl": "postgres://mi_proyecto_02_user:<password>@localhost:5432/mi_proyecto_02_db?sslmode=disable"
+  "schema": "mi_proyecto_02_db",
+  "databaseUrl": "postgres://mi_proyecto_02_user:<password>@localhost:5432/postgres?sslmode=disable"
 }
 ```
+
+`schema` es informativo para el CLI y puede persistirse en config, pero la **fuente de verdad para conexión sigue siendo `databaseUrl`**.
 
 Y existe el túnel WebSocket autenticado en:
 
@@ -86,7 +89,8 @@ Guardar en `.einar/config.json` solo datos necesarios de proyecto/DB:
     "name": "mi-proyecto-02"
   },
   "database": {
-    "url": "postgres://mi_proyecto_02_user:<password>@localhost:5432/mi_proyecto_02_db?sslmode=disable"
+    "url": "postgres://mi_proyecto_02_user:<password>@localhost:5432/postgres?sslmode=disable",
+    "schema": "mi_proyecto_02_db"
   },
   "configVersion": 1
 }
@@ -129,7 +133,7 @@ Defaults recomendados:
 
 ### Tareas
 1. Consumir respuesta de `POST /projects` en Postgres API.
-2. Persistir `project.id`, `project.name`, `database.url`.
+2. Persistir `project.id`, `project.name`, `database.url` y opcionalmente `database.schema`.
 3. Merge no destructivo con config existente + `configVersion`.
 4. Imprimir resumen:
    - proyecto
@@ -186,13 +190,14 @@ Acciones:
 
 ## D. API (mejora opcional recomendada)
 
-En `POST /projects`, mantener `databaseUrl` y agregar ayuda para uso local:
+En `POST /projects`, mantener `databaseUrl`, exponer `schema`, y opcionalmente agregar ayuda para uso local:
 
 ```json
 {
   "id": "...",
-  "name": "...",
-  "databaseUrl": "postgres://...",
+  "name": "demo",
+  "schema": "demo_db",
+  "databaseUrl": "postgres://demo_user:pass@host:5432/postgres?sslmode=disable",
   "tunnel": {
     "recommendedLocalHost": "127.0.0.1",
     "recommendedLocalPort": 15432,
@@ -200,6 +205,11 @@ En `POST /projects`, mantener `databaseUrl` y agregar ayuda para uso local:
   }
 }
 ```
+
+Notas importantes para el CLI:
+- no asumir que el nombre de la base coincide con el proyecto;
+- no reemplazar `/postgres` por `/<schema>` al preparar la URL local del túnel;
+- no hardcodear `public` en migraciones/SQL ni en clientes que usen el schema del proyecto.
 
 Beneficio: evita confusión entre URL interna del backend y conexión local del cliente.
 
@@ -260,13 +270,13 @@ Beneficio: evita confusión entre URL interna del backend y conexión local del 
 Comando de prueba:
 
 ```bash
-PGPASSWORD='<password>' psql -h localhost -p 15432 -U mi_proyecto_02_user -d mi_proyecto_02_db -c 'select current_database(), current_user;'
+PGPASSWORD='<password>' psql -h localhost -p 15432 -U mi_proyecto_02_user -d postgres -c 'show search_path; select current_database(), current_user;'
 ```
 
 DBeaver:
 - Host: `localhost`
 - Port: `15432`
-- Database: `mi_proyecto_02_db`
+- Database: `postgres`
 - Username: `mi_proyecto_02_user`
 - SSL: disable
 

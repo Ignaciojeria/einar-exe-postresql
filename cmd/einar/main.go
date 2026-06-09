@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -29,22 +30,138 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) < 2 || args[0] != "db" {
+	if len(args) == 0 {
 		return usageError()
 	}
 
-	switch args[1] {
-	case "connect":
-		return runDBConnect(args[2:])
-	case "persist-project-response":
-		return runPersistProjectResponse(args[2:])
+	switch args[0] {
+	case "db":
+		if len(args) < 2 {
+			return usageError()
+		}
+		switch args[1] {
+		case "connect":
+			return runDBConnect(args[2:])
+		case "persist-project-response":
+			return runPersistProjectResponse(args[2:])
+		default:
+			return usageError()
+		}
+	case "login":
+		return runLogin(args[1:])
 	default:
 		return usageError()
 	}
 }
 
 func usageError() error {
-	return fmt.Errorf("usage:\n  einar db connect [--project <name|id>] [--port <n>] [--api <url>] [--token <jwt>]\n  einar db persist-project-response [--file <response.json>]")
+	return fmt.Errorf("usage:\n  einar login <email> [--token <jwt>]\n  einar db connect [--project <name|id>] [--port <n>] [--api <url>] [--token <jwt>]\n  einar db persist-project-response [--file <response.json>]")
+}
+
+func runLogin(args []string) error {
+	fs := flag.NewFlagSet("login", flag.ContinueOnError)
+	token := fs.String("token", "", "Bearer token (defaults to EINAR_TOKEN/PGTUNNEL_TOKEN or prompt)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() != 1 {
+		return errors.New("usage: einar login <email> [--token <jwt>]")
+	}
+
+	email := strings.TrimSpace(fs.Arg(0))
+	if email == "" {
+		return errors.New("email is required")
+	}
+
+	resolvedToken := strings.TrimSpace(*token)
+	if resolvedToken == "" {
+		resolvedToken = strings.TrimSpace(firstNonEmpty(os.Getenv("EINAR_TOKEN"), os.Getenv("PGTUNNEL_TOKEN")))
+	}
+	if resolvedToken == "" {
+		var err error
+		resolvedToken, err = promptToken()
+		if err != nil {
+			return err
+		}
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot determine home directory: %w", err)
+	}
+
+	cfgPath := filepath.Join(home, ".einar", "config.json")
+	if err := persistLoginSession(cfgPath, email, resolvedToken); err != nil {
+		return err
+	}
+
+	log.Printf("authenticated and active account: %s", email)
+	log.Printf("session saved: %s", cfgPath)
+	return nil
+}
+
+func promptToken() (string, error) {
+	_, _ = fmt.Fprint(os.Stderr, "Paste token: ")
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("cannot read token from stdin: %w", err)
+	}
+
+	token := strings.TrimSpace(line)
+	if token == "" {
+		return "", errors.New("missing token: pass --token, set EINAR_TOKEN, or provide token via stdin")
+	}
+	return token, nil
+}
+
+func persistLoginSession(path, email, token string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("cannot read %s: %w", path, err)
+		}
+		raw = nil
+	}
+
+	cfg := map[string]any{}
+	if len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return fmt.Errorf("invalid JSON in %s: %w", path, err)
+		}
+	}
+
+	accounts := map[string]any{}
+	if existing, ok := cfg["accounts"].(map[string]any); ok {
+		accounts = existing
+	}
+
+	accounts[email] = map[string]any{
+		"email": email,
+		"token": token,
+	}
+
+	cfg["accounts"] = accounts
+	cfg["activeAccount"] = email
+	cfg["token"] = token
+	cfg["accessToken"] = token
+
+	encoded, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("cannot encode %s: %w", path, err)
+	}
+	encoded = append(encoded, '\n')
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("cannot create %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		return fmt.Errorf("cannot write %s: %w", path, err)
+	}
+
+	return nil
 }
 
 func runDBConnect(args []string) error {
@@ -128,6 +245,13 @@ type authConfigFile struct {
 	Token           string `json:"token"`
 	AccessToken     string `json:"accessToken"`
 	ProjectAPIToken string `json:"ProjectAPIToken"`
+	ActiveAccount   string `json:"activeAccount"`
+	Accounts        map[string]struct {
+		Email           string `json:"email"`
+		Token           string `json:"token"`
+		AccessToken     string `json:"accessToken"`
+		ProjectAPIToken string `json:"ProjectAPIToken"`
+	} `json:"accounts"`
 }
 
 type createProjectResponse struct {
@@ -144,6 +268,12 @@ type projectConfig struct {
 	DatabaseSchema string
 }
 
+type authSection struct {
+	Issuer       string `json:"issuer,omitempty"`
+	ClientID     string `json:"clientId,omitempty"`
+	ClientSecret string `json:"clientSecret,omitempty"`
+}
+
 type configFile struct {
 	Project struct {
 		ID   string `json:"id"`
@@ -153,6 +283,7 @@ type configFile struct {
 		URL    string `json:"url"`
 		Schema string `json:"schema"`
 	} `json:"database"`
+	Auth authSection `json:"auth"`
 
 	LastProjectID   string `json:"lastProjectId"`
 	LastProjectSlug string `json:"lastProjectSlug"`
@@ -247,24 +378,30 @@ func loadConfig(path string) (projectConfig, error) {
 }
 
 func persistProjectConfig(path string, resp createProjectResponse) error {
-	cfg, err := readConfigDocument(path)
+	existing, err := loadFullConfig(path)
 	if err != nil {
 		return err
 	}
 
-	cfg["project"] = map[string]any{
-		"id":   strings.TrimSpace(resp.ID),
-		"name": strings.TrimSpace(resp.Name),
+	var cfg struct {
+		Project struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"project"`
+		Database struct {
+			URL string `json:"url"`
+		} `json:"database"`
+		Auth *authSection `json:"auth,omitempty"`
 	}
 
-	database := map[string]any{
-		"url": strings.TrimSpace(resp.DatabaseURL),
+	cfg.Project.ID = strings.TrimSpace(resp.ID)
+	cfg.Project.Name = strings.TrimSpace(resp.Name)
+	cfg.Database.URL = strings.TrimSpace(resp.DatabaseURL)
+
+	if existing.Auth.Issuer != "" || existing.Auth.ClientID != "" || existing.Auth.ClientSecret != "" {
+		auth := existing.Auth
+		cfg.Auth = &auth
 	}
-	if schema := strings.TrimSpace(resp.Schema); schema != "" {
-		database["schema"] = schema
-	}
-	cfg["database"] = database
-	cfg["configVersion"] = 1
 
 	encoded, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -281,26 +418,23 @@ func persistProjectConfig(path string, resp createProjectResponse) error {
 	return nil
 }
 
-func readConfigDocument(path string) (map[string]any, error) {
+func loadFullConfig(path string) (configFile, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]any{}, nil
+			return configFile{}, nil
 		}
-		return nil, fmt.Errorf("cannot read %s: %w", path, err)
+		return configFile{}, fmt.Errorf("cannot read %s: %w", path, err)
 	}
 
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
-		return map[string]any{}, nil
+		return configFile{}, nil
 	}
 
-	var cfg map[string]any
+	var cfg configFile
 	if err := json.Unmarshal(trimmed, &cfg); err != nil {
-		return nil, fmt.Errorf("invalid JSON in %s: %w", path, err)
-	}
-	if cfg == nil {
-		cfg = map[string]any{}
+		return configFile{}, fmt.Errorf("invalid JSON in %s: %w", path, err)
 	}
 	return cfg, nil
 }
@@ -427,6 +561,16 @@ func readTokenFromConfig(path string) (string, error) {
 	var parsed authConfigFile
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", err
+	}
+
+	activeAccount := strings.TrimSpace(parsed.ActiveAccount)
+	if activeAccount != "" {
+		if account, ok := parsed.Accounts[activeAccount]; ok {
+			accountToken := strings.TrimSpace(firstNonEmpty(account.Token, account.AccessToken, account.ProjectAPIToken))
+			if accountToken != "" {
+				return accountToken, nil
+			}
+		}
 	}
 
 	return strings.TrimSpace(firstNonEmpty(parsed.Token, parsed.AccessToken, parsed.ProjectAPIToken)), nil
